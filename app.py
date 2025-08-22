@@ -7,73 +7,72 @@ from datetime import date
 st.set_page_config(layout="wide")
 st.title("Revenue & EBITDA Forecast Tracker")
 
-# ---------- Submit Forecast Form ----------
+# ---------- Form to Submit Forecast ----------
 st.subheader("Submit Forecast")
 region = st.selectbox("Region", ["USA", "Canada", "Europe", "India", "Australia", "Africa"])
 week = st.date_input("Week", value=date.today())
 flash_est = st.number_input("Flash Estimate", min_value=0.0, step=1000.0)
 actuals = st.number_input("Actuals", min_value=0.0, step=1000.0)
 
-def calculate_metrics(flash, actuals, week):
-    fva = flash - actuals
-    acc_pct = fva / actuals if actuals != 0 else None
-    acc_score = max(0, 1 - abs(fva) / abs(actuals)) if actuals != 0 else 0
-    month = week.month
-    eom_flag = ""
-    return fva, acc_pct, acc_score, month, eom_flag
-
 if st.button("Submit"):
-    fva, acc_pct, acc_score, month, eom_flag = calculate_metrics(flash_est, actuals, week)
-    insert_query = text('''
-        INSERT INTO revenue_forecast (
-            region, week, flash_est, actuals,
-            flash_vs_act, pct_variance, accuracy, month, eom
-        ) VALUES (:region, :week, :flash_est, :actuals, :fva, :acc_pct, :acc_score, :month, :eom_flag)
-    ''')
+    fva = flash_est - actuals
+    pct_var = fva / actuals if actuals != 0 else None
+    acc = max(0, 1 - abs(fva) / abs(actuals)) if actuals != 0 else 0
+    month = week.month
+
     with get_connection() as conn:
+        insert_query = text('''
+            INSERT INTO revenue_forecast (
+                Region, Week, "Flash Est", Actuals, "Flash vs Act", "% Variance", Accuracy, Month, EOM
+            ) VALUES (
+                :region, :week, :flash_est, :actuals, :fva, :pct_var, :acc, :month, :eom
+            )
+        ''')
+
+        # Check if this is the last week of the month
+        existing = pd.read_sql("SELECT * FROM revenue_forecast WHERE Region = :region", conn, params={"region": region})
+        existing["Week"] = pd.to_datetime(existing["Week"])
+        latest_week = existing[existing["Week"].dt.month == week.month]["Week"].max()
+        eom_flag = "EOM" if pd.isna(latest_week) or week >= latest_week else ""
+
         conn.execute(insert_query, {
-            'region': region,
-            'week': week,
-            'flash_est': flash_est,
-            'actuals': actuals,
-            'fva': fva,
-            'acc_pct': acc_pct,
-            'acc_score': acc_score,
-            'month': month,
-            'eom_flag': eom_flag
+            "region": region,
+            "week": week,
+            "flash_est": flash_est,
+            "actuals": actuals,
+            "fva": fva,
+            "pct_var": pct_var,
+            "acc": acc,
+            "month": month,
+            "eom": eom_flag
         })
         conn.commit()
-    st.success("Forecast submitted.")
+        st.success("Forecast submitted!")
 
 # ---------- Load and Display Table ----------
 with get_connection() as conn:
     df = pd.read_sql("SELECT * FROM revenue_forecast", conn)
 
-df['week'] = pd.to_datetime(df['week'])
-df['flash_vs_act'] = df['flash_est'] - df['actuals']
-df['pct_variance'] = df['flash_vs_act'] / df['actuals']
-df['accuracy'] = (1 - abs(df['flash_vs_act']) / abs(df['actuals'])).clip(lower=0)
-df['month'] = df['week'].dt.month
+df['Week'] = pd.to_datetime(df['Week'])
 
-df.rename(columns={
-    'week': 'Week',
-    'region': 'Region',
-    'flash_est': 'Flash Est',
-    'actuals': 'Actuals',
-    'flash_vs_act': 'Flash vs Act',
-    'pct_variance': '% Variance',
-    'accuracy': 'Accuracy',
-    'month': 'Month',
-    'eom': 'EOM'
-}, inplace=True)
+# Recalculate derived metrics (optional redundancy)
+df['Flash vs Act'] = df['Flash Est'] - df['Actuals']
+df['% Variance'] = df['Flash vs Act'] / df['Actuals']
+df['Accuracy'] = (1 - abs(df['Flash vs Act']) / abs(df['Actuals'])).clip(lower=0)
+df['Month'] = df['Week'].dt.month
+
+# Update EOM field
+df['EOM'] = ""
+latest_weeks = df.groupby(['Region', 'Month'])['Week'].transform('max')
+df.loc[df['Week'] == latest_weeks, 'EOM'] = 'EOM'
 
 st.subheader("Forecast Table")
 st.dataframe(df, use_container_width=True)
 
-# ---------- Export ----------
+# ---------- Export Button ----------
 st.download_button(
     label="Export to CSV",
-    data=df.to_csv(index=False).encode('utf-8'),
-    file_name='revenue_forecast.csv',
-    mime='text/csv'
+    data=df.to_csv(index=False).encode("utf-8"),
+    file_name="revenue_forecast.csv",
+    mime="text/csv"
 )
