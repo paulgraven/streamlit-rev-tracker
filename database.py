@@ -1,12 +1,10 @@
+# database.py
 import os
-from sqlalchemy import create_engine
-
-# Prefer POSTGRES_URL; fall back to DATABASE_URL if Railway provides it
-DATABASE_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("Database URL environment variable is not set.")
-
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+import psycopg2
 
 def get_connection():
-    return engine.connect()
+    db_url = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("Database URL environment variable is not set.")
+    # psycopg2 connects directly using the URL string
+    return psycopg2.connect(db_url)
