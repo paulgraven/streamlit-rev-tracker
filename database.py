@@ -1,10 +1,11 @@
-# database.py
 import os
-import psycopg2
+from sqlalchemy import create_engine
 
-def get_connection():
-    db_url = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
-    if not db_url:
-        raise RuntimeError("Database URL environment variable is not set.")
-    # psycopg2 connects directly using the URL string
-    return psycopg2.connect(db_url)
+DATABASE_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("Database URL environment variable is not set.")
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+def get_engine():
+    return engine
