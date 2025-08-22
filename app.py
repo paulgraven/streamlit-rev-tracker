@@ -1,8 +1,8 @@
+# app.py
 import streamlit as st
 import pandas as pd
-from sqlalchemy import text
-from database import get_connection
 from datetime import date
+from database import get_connection
 
 st.set_page_config(layout="wide")
 st.title("Weekly Revenue & EBITDA Forecast")
@@ -26,65 +26,62 @@ if st.button("Submit"):
     month_num = week.month
     year_num = week.year
 
-    with get_connection() as conn:
-        # Insert the row using EXACT column names (quoted identifiers)
-        insert_sql = text("""
-            INSERT INTO revenue_forecast (
-                "Financials", "Region", "Week", "Flash Est", "Actuals",
-                "Flash vs Act", "% Variance", "Accuracy", "Month", "EOM"
-            ) VALUES (
-                :financials, :region, :week, :flash_est, :actuals,
-                :fva, :pct_var, :acc, :month_num, ''
+    conn = get_connection()
+    try:
+        with conn, conn.cursor() as cur:
+            # Insert row using EXACT quoted column names
+            cur.execute(
+                '''
+                INSERT INTO revenue_forecast (
+                    "Financials", "Region", "Week", "Flash Est", "Actuals",
+                    "Flash vs Act", "% Variance", "Accuracy", "Month", "EOM"
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, '')
+                ''',
+                (
+                    financials, region, week, float(flash_est), float(actuals),
+                    float(fva), None if pct_var is None else float(pct_var),
+                    float(acc), month_num
+                )
             )
-        """)
-        conn.execute(insert_sql, {
-            "financials": financials,
-            "region": region,
-            "week": week,
-            "flash_est": float(flash_est),
-            "actuals": float(actuals),
-            "fva": float(fva),
-            "pct_var": float(pct_var) if pct_var is not None else None,
-            "acc": float(acc),
-            "month_num": month_num
-        })
 
-        # Ensure exactly one EOM per Region x Month x Year:
-        # 1) Clear existing EOM for this Region/Month/Year
-        clear_eom = text("""
-            UPDATE revenue_forecast
-            SET "EOM" = ''
-            WHERE "Region" = :region
-              AND DATE_PART('month', "Week") = :m
-              AND DATE_PART('year', "Week")  = :y
-        """)
-        conn.execute(clear_eom, {"region": region, "m": month_num, "y": year_num})
-
-        # 2) Mark the max Week in that Region/Month/Year as EOM
-        set_eom = text("""
-            WITH mx AS (
-              SELECT MAX("Week") AS w
-              FROM revenue_forecast
-              WHERE "Region" = :region
-                AND DATE_PART('month', "Week") = :m
-                AND DATE_PART('year', "Week")  = :y
+            # Ensure exactly one EOM per Region×Month×Year
+            cur.execute(
+                '''
+                UPDATE revenue_forecast
+                SET "EOM" = ''
+                WHERE "Region" = %s
+                  AND DATE_PART('month', "Week") = %s
+                  AND DATE_PART('year',  "Week") = %s
+                ''',
+                (region, month_num, year_num)
             )
-            UPDATE revenue_forecast
-            SET "EOM" = 'EOM'
-            WHERE "Region" = :region
-              AND DATE_PART('month', "Week") = :m
-              AND DATE_PART('year', "Week")  = :y
-              AND "Week" = (SELECT w FROM mx)
-        """)
-        conn.execute(set_eom, {"region": region, "m": month_num, "y": year_num})
+            cur.execute(
+                '''
+                WITH mx AS (
+                  SELECT MAX("Week") AS w
+                  FROM revenue_forecast
+                  WHERE "Region" = %s
+                    AND DATE_PART('month', "Week") = %s
+                    AND DATE_PART('year',  "Week") = %s
+                )
+                UPDATE revenue_forecast
+                SET "EOM" = 'EOM'
+                WHERE "Region" = %s
+                  AND DATE_PART('month', "Week") = %s
+                  AND DATE_PART('year',  "Week") = %s
+                  AND "Week" = (SELECT w FROM mx)
+                ''',
+                (region, month_num, year_num, region, month_num, year_num)
+            )
 
-        conn.commit()
-
-    st.success("Forecast submitted.")
+        st.success("Forecast submitted.")
+    finally:
+        conn.close()
 
 # ---------- Data View ----------
-with get_connection() as conn:
-    df = pd.read_sql(
+conn = get_connection()
+try:
+    df = pd.read_sql_query(
         '''
         SELECT
           "Financials","Region","Week","Flash Est","Actuals",
@@ -94,6 +91,8 @@ with get_connection() as conn:
         ''',
         conn
     )
+finally:
+    conn.close()
 
 # Safe parsing for display
 if "Week" in df.columns:
