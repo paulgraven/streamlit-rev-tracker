@@ -1,12 +1,14 @@
-# database.py
 import os
 from sqlalchemy import create_engine
 
-POSTGRES_URL = os.getenv("POSTGRES_URL")  # set this in Railway service Variables
-if not POSTGRES_URL:
-    raise RuntimeError("POSTGRES_URL environment variable is not set.")
+# Prefer POSTGRES_URL, but fallback to Railway's default DATABASE_URL if available
+DATABASE_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 
-engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+if not DATABASE_URL:
+    raise RuntimeError("Database URL environment variable is not set.")
+
+# Create the database engine
+engine = create_engine(DATABASE_URL, echo=False)
 
 def get_connection():
     return engine.connect()
