@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
@@ -5,74 +6,85 @@ from database import get_connection
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("Revenue & EBITDA Forecast Tracker")
+st.title("Weekly Revenue & EBITDA Forecast")
 
-# ---------- Form to Submit Forecast ----------
+# ------------- Data Entry -------------
 st.subheader("Submit Forecast")
+financials = st.selectbox("Financials", ["Revenue", "EBITDA"])
 region = st.selectbox("Region", ["USA", "Canada", "Europe", "India", "Australia", "Africa"])
 week = st.date_input("Week", value=date.today())
-flash_est = st.number_input("Flash Estimate", min_value=0.0, step=1000.0)
-actuals = st.number_input("Actuals", min_value=0.0, step=1000.0)
+flash_est = st.number_input("Flash Estimate", min_value=0.0, step=1000.0, format="%.2f")
+actuals = st.number_input("Actuals", min_value=0.0, step=1000.0, format="%.2f")
+
+def compute_metrics(flash_val: float, actual_val: float):
+    fva = flash_val - actual_val
+    pct_var = (fva / actual_val) if actual_val != 0 else None
+    acc = max(0.0, 1.0 - abs(fva) / abs(actual_val)) if actual_val != 0 else 0.0
+    return fva, pct_var, acc
 
 if st.button("Submit"):
-    fva = flash_est - actuals
-    pct_var = fva / actuals if actuals != 0 else None
-    acc = max(0, 1 - abs(fva) / abs(actuals)) if actuals != 0 else 0
-    month = week.month
+    fva, pct_var, acc = compute_metrics(flash_est, actuals)
+    month_num = week.month
 
     with get_connection() as conn:
-        insert_query = text('''
+        # Determine EOM by comparing to current max "Week" for the same calendar month
+        max_week = conn.execute(
+            text('SELECT MAX("Week") FROM revenue_forecast WHERE DATE_PART(\'month\',"Week") = :m'),
+            {"m": month_num}
+        ).scalar()
+
+        eom_flag = "EOM" if (max_week is None or pd.to_datetime(week) >= pd.to_datetime(max_week)) else ""
+
+        insert_sql = text("""
             INSERT INTO revenue_forecast (
-                Region, Week, "Flash Est", Actuals, "Flash vs Act", "% Variance", Accuracy, Month, EOM
-            ) VALUES (
-                :region, :week, :flash_est, :actuals, :fva, :pct_var, :acc, :month, :eom
+                "Financials", "Region", "Week", "Flash Est", "Actuals",
+                "Flash vs Act", "% Variance", "Accuracy", "Month", "EOM"
             )
-        ''')
+            VALUES (
+                :financials, :region, :week, :flash_est, :actuals,
+                :fva, :pct_var, :acc, :month_num, :eom_flag
+            )
+        """)
 
-        # Check if this is the last week of the month
-        existing = pd.read_sql("SELECT * FROM revenue_forecast WHERE Region = :region", conn, params={"region": region})
-        existing["Week"] = pd.to_datetime(existing["Week"])
-        latest_week = existing[existing["Week"].dt.month == week.month]["Week"].max()
-        eom_flag = "EOM" if pd.isna(latest_week) or week >= latest_week else ""
-
-        conn.execute(insert_query, {
+        conn.execute(insert_sql, {
+            "financials": financials,
             "region": region,
             "week": week,
-            "flash_est": flash_est,
-            "actuals": actuals,
-            "fva": fva,
-            "pct_var": pct_var,
-            "acc": acc,
-            "month": month,
-            "eom": eom_flag
+            "flash_est": float(flash_est),
+            "actuals": float(actuals),
+            "fva": float(fva),
+            "pct_var": float(pct_var) if pct_var is not None else None,
+            "acc": float(acc),
+            "month_num": month_num,
+            "eom_flag": eom_flag
         })
         conn.commit()
-        st.success("Forecast submitted!")
 
-# ---------- Load and Display Table ----------
+    st.success("Forecast submitted.")
+
+# ------------- Data View -------------
 with get_connection() as conn:
-    df = pd.read_sql("SELECT * FROM revenue_forecast", conn)
+    df = pd.read_sql('SELECT * FROM revenue_forecast', conn)
 
-df['Week'] = pd.to_datetime(df['Week'])
+# Ensure correct types/derived values for display only (columns already exist in DB)
+if "Week" in df.columns:
+    df["Week"] = pd.to_datetime(df["Week"])
 
-# Recalculate derived metrics (optional redundancy)
-df['Flash vs Act'] = df['Flash Est'] - df['Actuals']
-df['% Variance'] = df['Flash vs Act'] / df['Actuals']
-df['Accuracy'] = (1 - abs(df['Flash vs Act']) / abs(df['Actuals'])).clip(lower=0)
-df['Month'] = df['Week'].dt.month
-
-# Update EOM field
-df['EOM'] = ""
-latest_weeks = df.groupby(['Region', 'Month'])['Week'].transform('max')
-df.loc[df['Week'] == latest_weeks, 'EOM'] = 'EOM'
+# (Optional) recompute EOM for display consistency
+if all(col in df.columns for col in ["Region", "Week"]):
+    disp = df.copy()
+    disp["Month"] = disp["Week"].dt.month
+    latest = disp.groupby(["Month"])["Week"].transform("max")
+    disp.loc[:, "EOM"] = (disp["Week"] == latest).map({True: "EOM", False: ""})
+else:
+    disp = df
 
 st.subheader("Forecast Table")
-st.dataframe(df, use_container_width=True)
+st.dataframe(disp, use_container_width=True)
 
-# ---------- Export Button ----------
 st.download_button(
-    label="Export to CSV",
-    data=df.to_csv(index=False).encode("utf-8"),
+    "Export to CSV",
+    disp.to_csv(index=False).encode("utf-8"),
     file_name="revenue_forecast.csv",
     mime="text/csv"
 )
