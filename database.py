@@ -1,11 +1,12 @@
-from sqlalchemy import create_engine
+# database.py
 import os
+from sqlalchemy import create_engine
 
-# You can store this securely in an environment variable or .env file
-POSTGRES_URL = "postgresql://postgres:jsqAddWjYjEFQKbjSzgFMuSTmdjQnPtq@caboose.proxy.rlwy.net:52378/railway"
+POSTGRES_URL = os.getenv("POSTGRES_URL")  # set this in Railway service Variables
+if not POSTGRES_URL:
+    raise RuntimeError("POSTGRES_URL environment variable is not set.")
 
-# Create SQLAlchemy engine
-engine = create_engine(POSTGRES_URL)
+engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
 
 def get_connection():
     return engine.connect()
